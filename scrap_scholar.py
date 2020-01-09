@@ -21,7 +21,8 @@ ITEMS_PER_PAGE = 10
 BASE_URL = 'https://scholar.google.fr/scholar?'
 
 # Fetched results
-global values
+values = []
+query = ""
 
 # Used to drop outdated proxies
 class ModifiableCycle(object):
@@ -48,9 +49,7 @@ class ModifiableCycle(object):
 def signal_handler(sig, frame):
     global values
 
-    print(f'Catching forced exit, writing {len(values)} results...')
     write_values_to_html()
-    done = True
     sys.exit(0)
 
 
@@ -60,7 +59,7 @@ def get_proxy_pool(path='Proxy List.txt'):
         proxies = pd.read_csv(path, header = None)
         proxies = proxies.values.tolist()
         proxies = list(it.chain.from_iterable(proxies))
-    except Exception as e:
+    except Exception:
         # Or automatically from
         proxies = requests.get("https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt").text.split('\n')
     
@@ -98,27 +97,27 @@ def parse_from_page(page):
         # This can be just a citation
         try:
             value['title'] = item.xpath('.//h3[@class="gs_rt"]/a')[0].text_content()
-        except IndexError as e:
+        except IndexError:
             value['title'] = item.xpath('.//h3[@class="gs_rt"]')[0].getchildren()[1].text_content()
             
         try:
             value['link'] = item.xpath('.//h3[@class="gs_rt"]/a')[0].get('href')
-        except IndexError as e:
+        except IndexError:
             value['link'] = '#'
 
         try:
             value['citations'] = [int(re.sub('[^0-9]+', '', i.text_content().replace('\xa0', ''))) for i in item.xpath('.//div[@class="gs_fl"]/a') if 'Cité' in i.text_content()][0]
-        except IndexError as e:
+        except IndexError:
             value['citations'] = 0
 
         try:
             value['document'] = item.xpath('.//div[@class="gs_or_ggsm"]/a')[0].get('href')
-        except IndexError as e:
+        except IndexError:
             value['document'] = '#'
 
         try:
             value['date'] = int(item.xpath('.//div[@class="gs_a"]')[0].text_content().split(',')[-1].split('-')[0].strip())
-        except ValueError as e:
+        except ValueError:
             value['date'] = '?' 
 
         results.append(value)
@@ -128,6 +127,7 @@ def parse_from_page(page):
 
 def write_values_to_html(path='scraping_results.html'):
     global values
+    global query
 
     output = """
     <!DOCTYPE html>
@@ -154,16 +154,16 @@ def write_values_to_html(path='scraping_results.html'):
     </head>
     <body>
 
-    <div class="container">
-    <h2>HTML Table</h2>
+    <div class="container" style="max-width:none;">
+    <h2>Results for: """+ query + """</h2>
 
-    <table>
+    <table id="paperTable" style="width:100vw;table-layout:fixed">
     <thead>
     <tr class="d-flex">
         <th scope="col">#</th>
         <th scope="col" class="col">Titre</th>
-        <th scope="col" class="col-1">Date</th>
-        <th scope="col" class="col-1">Citations</th>
+        <th scope="col" class="col-1">Date <a href="#" onclick="sortTable(1)">&uarr; &darr;</a> </th>
+        <th scope="col" class="col-1">Citations <a href="#" onclick="sortTable(2)">&uarr; &darr;</a></th>
         <th scope="col" class="col-2">Document</th>
     </tr>
 	</thead>
@@ -173,7 +173,7 @@ def write_values_to_html(path='scraping_results.html'):
     for (i, v) in enumerate(sorted(values, key = lambda x: -x['citations']), start=1):
         output += f"""
         <tr class="d-flex">
-            <th scope="row">{i}</th>
+            <th scope="row"><b>{i}</b></th>
             <td class="col"><a href="{v['link']}">{v['title']}</a></th>
             <td class="col-1">{v['date']}</th>
             <td class="col-1">{v['citations']}</th>
@@ -186,11 +186,52 @@ def write_values_to_html(path='scraping_results.html'):
     </table>
     </div>
 
+    <script>
+    function sortTable(n) {
+        var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
+        table = document.getElementById("paperTable");
+        switching = true;
+        dir = "asc";
+        while (switching) {
+            switching = false;
+            rows = table.rows;
+            for (i = 1; i < (rows.length - 1); i++) {
+                shouldSwitch = false;
+                x = Number(rows[i].getElementsByTagName("TD")[n].innerHTML.toLowerCase().trim()) || 0;
+                y = Number(rows[i + 1].getElementsByTagName("TD")[n].innerHTML.toLowerCase().trim()) || 0;
+                if (dir == "asc") {
+                    if (x < y) {
+                        shouldSwitch = true;
+                        break;
+                    }
+                } else if (dir == "desc") {
+                    if (x > y) {
+                        shouldSwitch = true;
+                        break;
+                    }
+                }
+            }
+
+            if (shouldSwitch) {
+                rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
+                switching = true;
+                switchcount ++;
+            } else {
+                console.log("Table was sorted in ascending order")
+                if (switchcount == 0 && dir == "asc") {
+                    dir = "desc";
+                    switching = true;
+                }
+            }
+        }
+    }
+    </script>
+
     </body>
     </html>
     """
 
-    with open(path, 'w') as file:
+    with open(path, 'w', encoding="utf-8") as file:
         file.write(output)
 
     # Save a JSON copy as well
@@ -200,7 +241,7 @@ def write_values_to_html(path='scraping_results.html'):
 
 def main():
     global values
-    values = []
+    global query
 
     # Define SIGINT handler
     signal.signal(signal.SIGINT, signal_handler)
@@ -214,9 +255,11 @@ def main():
 
     args = parser.parse_args()
 
+    query = args.query
+
     print('Press CTRL + C anytime to interrupt and save current results.')
 
-    urls = get_urls(args.query, args.number, args.yearlow)
+    urls = get_urls(query, args.number, args.yearlow)
     proxy_pool = get_proxy_pool()
 
     # Fake UserAgent
@@ -250,8 +293,11 @@ def main():
                 # Connection closed by the host
                 proxy_pool.delete_previous()
                 pass
+            except requests.exceptions.ConnectionError as e:
+                print('ConnectionError:', e)
+                pass
             except Exception as e:
-                print(type(e))
+                print(type(e), str(e))
                 pass
 
     # Save the items in a readable format, by descending order
